@@ -3,9 +3,6 @@
 
 import logging
 import asyncio
-import threading
-import os
-from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 
@@ -15,24 +12,6 @@ BOT_TOKEN = "8687327095:AAGn0C3_hJJJrf6oqcXf5kNZzuQ_X-D5pjA"
 TARGET_GROUP_ID = -1003534894759
 admin_cache = set()
 admin_time = 0
-
-# Flask app para keep-alive
-app_flask = Flask(__name__)
-
-@app_flask.route('/health', methods=['GET'])
-def health():
-    """Endpoint para Uptime Robot - mantiene el bot despierto"""
-    return jsonify({'status': 'ok', 'bot': 'alive'}), 200
-
-@app_flask.route('/', methods=['GET'])
-def index():
-    """Endpoint raíz"""
-    return jsonify({'status': 'Bot is running'}), 200
-
-def run_flask():
-    """Ejecutar Flask en un thread separado"""
-    port = int(os.environ.get('PORT', 5000))
-    app_flask.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 async def check_admin(context, uid):
     global admin_cache, admin_time
@@ -99,13 +78,4 @@ async def main():
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # Iniciar Flask en un thread separado
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Esperar un poco para que Flask inicie
-    import time
-    time.sleep(2)
-    
-    # Iniciar el bot en el thread principal
     asyncio.run(main())

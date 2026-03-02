@@ -1,1 +1,1 @@
-web: python3 alias_bot.py
+worker: python3 alias_bot.py
