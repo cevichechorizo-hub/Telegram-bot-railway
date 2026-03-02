@@ -3,13 +3,19 @@
 
 import logging
 import asyncio
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
+from telegram.ext import Application, ContextTypes
+from flask import Flask, request, jsonify
 
 logging.disable(logging.CRITICAL)
 
 BOT_TOKEN = "8687327095:AAGn0C3_hJJJrf6oqcXf5kNZzuQ_X-D5pjA"
 TARGET_GROUP_ID = -1003534894759
+WEBHOOK_URL = "https://telegram-bot-railway-production-1ec5.up.railway.app/webhook"
+
+app = Flask(__name__)
+application = None
 admin_cache = set()
 admin_time = 0
 
@@ -67,15 +73,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     asyncio.create_task(del60())
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        data = request.get_json()
+        update = Update.de_json(data, application.bot)
+        
+        # Procesar en background (no bloquear respuesta)
+        asyncio.create_task(process_update(update))
+        
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        print(f"Error en webhook: {e}")
+        return jsonify({"ok": False}), 500
+
+async def process_update(update: Update):
+    try:
+        context = ContextTypes.DEFAULT_TYPE()
+        context.bot = application.bot
+        context.application = application
+        
+        if update.message:
+            if update.message.text and update.message.text.startswith('/start'):
+                await start(update, context)
+            else:
+                await handle_msg(update, context)
+    except Exception as e:
+        print(f"Error procesando update: {e}")
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+async def setup_webhook():
+    """Configura el webhook en Telegram"""
+    try:
+        await application.bot.set_webhook(
+            url=WEBHOOK_URL,
+            allowed_updates=["message", "callback_query"]
+        )
+        print(f"✅ Webhook configurado: {WEBHOOK_URL}")
+    except Exception as e:
+        print(f"❌ Error configurando webhook: {e}")
+
 async def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, handle_msg))
+    global application
     
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    await asyncio.Event().wait()
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Inicializar la aplicación
+    await application.initialize()
+    
+    # Configurar webhook
+    await setup_webhook()
+    
+    print("✅ Bot webhook iniciado")
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
+    
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
