@@ -1,1 +1,2 @@
-worker: python3 /home/ubuntu/alias_bot.py
+bot: python3 alias_bot.py
+keep_alive: python3 keep_alive.py
