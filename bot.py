@@ -213,19 +213,27 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
 # ============ INICIAR BOT EN THREAD SEPARADO ============
 
 def run_bot():
-    init_db()
-    application = ApplicationBuilder().token(TOKEN).build()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
+    async def _run():
+        init_db()
+        application = ApplicationBuilder().token(TOKEN).build()
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(
+            poll_interval=1.0,
+            timeout=10,
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True
+        )
+        while True:
+            await asyncio.sleep(3600)
     
-    asyncio.run(application.run_polling(
-        poll_interval=0.5,
-        timeout=10,
-        allowed_updates=['message', 'callback_query'],
-        drop_pending_updates=True
-    ))
+    loop.run_until_complete(_run())
 
 if __name__ == '__main__':
     # Iniciar bot de Telegram en thread separado
