@@ -72,19 +72,19 @@ def add_referral(referrer_id, visitor_ip):
     conn.close()
     return added
 
-# ============ FLASK (SERVIDOR WEB) ============
+# ============ FLASK ============
 
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
-@app.route('/health')
+@flask_app.route('/health')
 def health():
     return jsonify({"status": "ok"})
 
-@app.route('/')
+@flask_app.route('/')
 def index():
     return jsonify({"status": "Bot de Referidos activo"})
 
-@app.route('/ref/<user_id>')
+@flask_app.route('/ref/<user_id>')
 def referral_redirect(user_id):
     visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if visitor_ip:
@@ -92,7 +92,7 @@ def referral_redirect(user_id):
     add_referral(user_id, visitor_ip)
     return redirect(TIKTOK_URL)
 
-# ============ BOT DE TELEGRAM ============
+# ============ BOT ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -164,35 +164,33 @@ async def check_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard))
 
-def run_bot():
-    """Corre el bot de Telegram en un thread separado con su propio event loop."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# ============ MAIN ============
 
-    async def _run():
-        init_db()
-        application = ApplicationBuilder().token(TOKEN).build()
-        application.add_handler(CommandHandler('start', start))
-        application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(
-            poll_interval=1.0,
-            timeout=10,
-            allowed_updates=['message', 'callback_query'],
-            drop_pending_updates=True
-        )
-        while True:
-            await asyncio.sleep(3600)
+async def main():
+    init_db()
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(
+        poll_interval=1.0,
+        timeout=10,
+        allowed_updates=['message', 'callback_query'],
+        drop_pending_updates=True
+    )
+    while True:
+        await asyncio.sleep(3600)
 
-    loop.run_until_complete(_run())
-
-# Iniciar el bot en background al importar el módulo (necesario para gunicorn)
-init_db()
-bot_thread = threading.Thread(target=run_bot, daemon=True)
-bot_thread.start()
-
-# ============ ENTRY POINT ============
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+    # Flask en thread separado
+    def run_flask():
+        flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # Bot en main thread
+    asyncio.run(main())
