@@ -3,11 +3,12 @@ import sqlite3
 import asyncio
 import os
 import datetime
+import threading
 from flask import Flask, request, redirect, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
-# Configuración
+# ============ CONFIGURACIÓN ============
 TOKEN = "8723515974:AAF1PIZPXu8qNB4u_LQgKvi0Zz8qGKpkkUE"
 BASE_URL = os.getenv('BASE_URL', 'https://telegram-bot-railway-production-1ec5.up.railway.app')
 DB_PATH = '/tmp/referrals.db'
@@ -17,7 +18,7 @@ DEFAULT_GROUP_ID = -1003534894759
 
 logging.disable(logging.CRITICAL)
 
-flask_app = Flask(__name__)
+# ============ BASE DE DATOS ============
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -60,9 +61,9 @@ def add_referral(referrer_id, visitor_ip):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO visitor_ips (user_id, visitor_ip) VALUES (?, ?)", 
+        c.execute("INSERT INTO visitor_ips (user_id, visitor_ip) VALUES (?, ?)",
                   (str(referrer_id), visitor_ip))
-        c.execute("UPDATE referrals SET click_count = click_count + 1 WHERE user_id = ?", 
+        c.execute("UPDATE referrals SET click_count = click_count + 1 WHERE user_id = ?",
                   (str(referrer_id),))
         conn.commit()
         added = True
@@ -71,34 +72,36 @@ def add_referral(referrer_id, visitor_ip):
     conn.close()
     return added
 
-def get_progress_message(count, referral_link):
-    if count >= REQUIRED_REFERRALS:
-        msg = f"✅ *¡Completaste los {REQUIRED_REFERRALS} referidos!*\n\n"
-        msg += "🎉 Recibirás el enlace al grupo FREE en breve."
-    else:
-        remaining = REQUIRED_REFERRALS - count
-        msg = f"📊 *Tu progreso: {count}/{REQUIRED_REFERRALS} referidos*\n\n"
-        if count == 0:
-            msg += "Aún no tienes referidos. Comparte tu enlace para comenzar.\n\n"
-        else:
-            msg += f"¡Vas bien! Te faltan *{remaining}* referidos más.\n\n"
-        msg += f"📋 *Tu enlace de referido (CÓPIALO Y COMPARTE):*\n\n"
-        msg += f"🔗 {referral_link}\n\n"
-        msg += "Comparte este enlace con tus amigos.\n"
-        msg += "Cada persona diferente que haga clic se contará automáticamente.\n\n"
-        msg += f"Cuando completes los {REQUIRED_REFERRALS} referidos, recibirás un enlace para unirte al grupo FREE (válido 1 hora)."
-    return msg
+# ============ FLASK (SERVIDOR WEB) ============
+
+app = Flask(__name__)
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
+
+@app.route('/')
+def index():
+    return jsonify({"status": "Bot de Referidos activo"})
+
+@app.route('/ref/<user_id>')
+def referral_redirect(user_id):
+    visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if visitor_ip:
+        visitor_ip = visitor_ip.split(',')[0].strip()
+    add_referral(user_id, visitor_ip)
+    return redirect(TIKTOK_URL)
+
+# ============ BOT DE TELEGRAM ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    
     register_user(user_id, user.username, user.first_name)
     count = get_referral_count(user_id)
     referral_link = f"{BASE_URL}/ref/{user_id}"
-    
+
     if count >= REQUIRED_REFERRALS:
-        # Generar enlace al grupo
         try:
             expire_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
             invite = await context.bot.create_chat_invite_link(
@@ -111,20 +114,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🔗 *Enlace al grupo FREE (válido 1 hora):*\n{invite.invite_link}"
             await update.message.reply_text(msg, parse_mode='Markdown')
         except Exception:
-            msg = get_progress_message(count, referral_link)
-            keyboard = [[InlineKeyboardButton("🔄 Actualizar", callback_data="check_progress")]]
-            await update.message.reply_text(msg, parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard))
+            msg = f"✅ ¡Completaste los {REQUIRED_REFERRALS} referidos! Contacta al admin para tu enlace."
+            await update.message.reply_text(msg)
     else:
+        remaining = REQUIRED_REFERRALS - count
         msg = f"¡Hola {user.first_name}! 👋\n\n"
         msg += f"Para unirte al grupo FREE, necesitas que *{REQUIRED_REFERRALS} PERSONAS DIFERENTES* hagan clic en tu enlace.\n\n"
         msg += f"📋 *Tu enlace de referido (CÓPIALO Y COMPARTE):*\n\n"
         msg += f"🔗 {referral_link}\n\n"
-        msg += f"📊 *Tu progreso: {count}/{REQUIRED_REFERRALS} referidos completados*\n\n"
-        msg += "Comparte este enlace con tus amigos.\n"
-        msg += "Cada persona diferente que haga clic se contará automáticamente.\n\n"
-        msg += f"Cuando completes los {REQUIRED_REFERRALS} referidos, recibirás un enlace para unirte al grupo FREE (válido 1 hora)."
-        
+        msg += f"📊 *Tu progreso: {count}/{REQUIRED_REFERRALS}* referidos\n"
+        if count > 0:
+            msg += f"¡Vas bien! Te faltan *{remaining}* más.\n\n"
+        else:
+            msg += "\n"
+        msg += "Comparte este enlace. Cada persona diferente que haga clic cuenta automáticamente.\n\n"
+        msg += f"Cuando completes {REQUIRED_REFERRALS} referidos, recibirás el enlace al grupo FREE (válido 1 hora)."
+
         keyboard = [[InlineKeyboardButton("🔄 Ver mi progreso", callback_data="check_progress")]]
         await update.message.reply_text(msg, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard))
@@ -135,7 +140,7 @@ async def check_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     count = get_referral_count(user_id)
     referral_link = f"{BASE_URL}/ref/{user_id}"
-    
+
     if count >= REQUIRED_REFERRALS:
         try:
             expire_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
@@ -148,66 +153,46 @@ async def check_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🔗 *Enlace al grupo FREE (válido 1 hora):*\n{invite.invite_link}"
             await query.edit_message_text(msg, parse_mode='Markdown')
         except Exception:
-            msg = get_progress_message(count, referral_link)
-            keyboard = [[InlineKeyboardButton("🔄 Actualizar", callback_data="check_progress")]]
-            await query.edit_message_text(msg, parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard))
+            msg = f"✅ ¡Completaste los {REQUIRED_REFERRALS} referidos! Contacta al admin para tu enlace."
+            await query.edit_message_text(msg)
     else:
-        msg = get_progress_message(count, referral_link)
+        remaining = REQUIRED_REFERRALS - count
+        msg = f"📊 *Tu progreso: {count}/{REQUIRED_REFERRALS} referidos*\n\n"
+        msg += f"Te faltan *{remaining}* referidos más.\n\n"
+        msg += f"🔗 Tu enlace:\n{referral_link}"
         keyboard = [[InlineKeyboardButton("🔄 Actualizar", callback_data="check_progress")]]
         await query.edit_message_text(msg, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ============ FLASK ROUTES ============
+def run_bot():
+    """Corre el bot de Telegram en un thread separado con su propio event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-@flask_app.route('/health')
-def health():
-    return jsonify({"status": "ok", "bot": "active"})
+    async def _run():
+        init_db()
+        application = ApplicationBuilder().token(TOKEN).build()
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(
+            poll_interval=1.0,
+            timeout=10,
+            allowed_updates=['message', 'callback_query'],
+            drop_pending_updates=True
+        )
+        while True:
+            await asyncio.sleep(3600)
 
-@flask_app.route('/ref/<user_id>')
-def referral_redirect(user_id):
-    visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    if visitor_ip:
-        visitor_ip = visitor_ip.split(',')[0].strip()
-    add_referral(user_id, visitor_ip)
-    return redirect(TIKTOK_URL)
+    loop.run_until_complete(_run())
 
-@flask_app.route('/')
-def index():
-    return jsonify({"status": "Bot de Referidos activo"})
+# Iniciar el bot en background al importar el módulo (necesario para gunicorn)
+init_db()
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
 
-# ============ MAIN ============
-
-async def main():
-    init_db()
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
-    
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(
-        poll_interval=0.5,
-        timeout=10,
-        allowed_updates=['message', 'callback_query'],
-        drop_pending_updates=True
-    )
-    
-    # Mantener corriendo
-    while True:
-        await asyncio.sleep(3600)
-
+# ============ ENTRY POINT ============
 if __name__ == '__main__':
-    import threading
-    
     port = int(os.environ.get('PORT', 8080))
-    
-    # Bot en thread separado
-    def run_bot():
-        asyncio.run(main())
-    
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # Flask en main thread (Railway necesita que el servidor HTTP corra en main)
-    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
