@@ -21,6 +21,9 @@ USE_WEBHOOK = BASE_URL.startswith('https://')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Loop persistente para el bot (compartido entre Flask y el bot)
+BOT_LOOP = asyncio.new_event_loop()
+
 # ============ BASE DE DATOS ============
 
 def init_db():
@@ -142,6 +145,12 @@ async def check_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard))
 
+# ============ APP DEL BOT ============
+
+ptb_app = ApplicationBuilder().token(TOKEN).build()
+ptb_app.add_handler(CommandHandler('start', start))
+ptb_app.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
+
 # ============ FLASK ============
 
 flask_app = Flask(__name__)
@@ -164,63 +173,57 @@ def referral_redirect(user_id):
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
-    """Recibe updates de Telegram (solo en modo webhook/producción)."""
+    """Recibe updates de Telegram. Usa el BOT_LOOP persistente."""
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, ptb_app.bot)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(ptb_app.process_update(update))
-        loop.close()
+        # Enviar la coroutine al loop persistente del bot
+        future = asyncio.run_coroutine_threadsafe(
+            ptb_app.process_update(update),
+            BOT_LOOP
+        )
+        future.result(timeout=30)  # Esperar resultado
     except Exception as e:
         logger.error(f"Error en webhook: {e}")
     return jsonify({"ok": True})
 
-# ============ MODO POLLING (thread separado para Flask) ============
+# ============ THREAD DEL BOT LOOP ============
 
-def run_flask():
-    """Corre Flask en thread separado (solo en modo polling/local)."""
-    logger.info(f"Flask arrancando en puerto {PORT}")
-    flask_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
+def run_bot_loop():
+    """Corre el event loop del bot en un thread separado."""
+    asyncio.set_event_loop(BOT_LOOP)
+    BOT_LOOP.run_forever()
 
 # ============ INICIO ============
-
-# Construir app del bot
-ptb_app = ApplicationBuilder().token(TOKEN).build()
-ptb_app.add_handler(CommandHandler('start', start))
-ptb_app.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
 
 if __name__ == '__main__':
     init_db()
     logger.info(f"Modo: {'webhook' if USE_WEBHOOK else 'polling'} | Puerto: {PORT} | URL: {BASE_URL}")
 
+    # Iniciar el loop del bot en thread separado
+    bot_thread = threading.Thread(target=run_bot_loop, daemon=True)
+    bot_thread.start()
+
+    # Inicializar la app del bot en el loop persistente
+    future = asyncio.run_coroutine_threadsafe(ptb_app.initialize(), BOT_LOOP)
+    future.result(timeout=30)
+    logger.info("Bot inicializado")
+
     if USE_WEBHOOK:
-        # PRODUCCIÓN: configurar webhook y correr Flask en main thread
-        async def setup_webhook():
-            await ptb_app.initialize()
-            await ptb_app.bot.set_webhook(
+        # PRODUCCIÓN: configurar webhook
+        future = asyncio.run_coroutine_threadsafe(
+            ptb_app.bot.set_webhook(
                 url=f"{BASE_URL}/webhook",
                 drop_pending_updates=True
-            )
-            logger.info(f"Webhook configurado: {BASE_URL}/webhook")
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(setup_webhook())
-        loop.close()
-
-        # Flask en main thread
-        logger.info(f"Flask arrancando en puerto {PORT}")
-        flask_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
+            ),
+            BOT_LOOP
+        )
+        future.result(timeout=30)
+        logger.info(f"Webhook configurado: {BASE_URL}/webhook")
 
     else:
-        # LOCAL: Flask en thread, bot con polling en main thread
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-        logger.info("Flask corriendo en thread separado")
-
-        async def run_polling():
-            await ptb_app.initialize()
+        # LOCAL: iniciar polling en el loop persistente
+        async def start_polling():
             await ptb_app.start()
             await ptb_app.updater.start_polling(
                 poll_interval=1.0,
@@ -229,7 +232,10 @@ if __name__ == '__main__':
                 drop_pending_updates=True
             )
             logger.info("Bot polling iniciado")
-            while True:
-                await asyncio.sleep(3600)
 
-        asyncio.run(run_polling())
+        future = asyncio.run_coroutine_threadsafe(start_polling(), BOT_LOOP)
+        future.result(timeout=30)
+
+    # Flask en main thread
+    logger.info(f"Flask arrancando en puerto {PORT}")
+    flask_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
