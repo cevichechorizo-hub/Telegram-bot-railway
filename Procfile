@@ -1,1 +1,1 @@
-web: python3 alias_bot.py
+web: python3 bot.py
