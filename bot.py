@@ -3,9 +3,9 @@ import sqlite3
 import asyncio
 import os
 import datetime
-import threading
+import json
 from flask import Flask, request, redirect, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # ============ CONFIGURACIÓN ============
@@ -74,27 +74,10 @@ def add_referral(referrer_id, visitor_ip):
     conn.close()
     return added
 
-# ============ FLASK ============
+# ============ APP Y BOT ============
 
 flask_app = Flask(__name__)
-
-@flask_app.route('/health')
-def health():
-    return jsonify({"status": "ok"})
-
-@flask_app.route('/')
-def index():
-    return jsonify({"status": "Bot activo"})
-
-@flask_app.route('/ref/<user_id>')
-def referral_redirect(user_id):
-    visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    if visitor_ip:
-        visitor_ip = visitor_ip.split(',')[0].strip()
-    add_referral(user_id, visitor_ip)
-    return redirect(TIKTOK_URL)
-
-# ============ BOT ============
+application = ApplicationBuilder().token(TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -164,38 +147,64 @@ async def check_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ============ MAIN ============
+application.add_handler(CommandHandler('start', start))
+application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
 
-def run_bot():
-    """Bot en su propio event loop en thread separado."""
+# ============ FLASK ROUTES ============
+
+@flask_app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
+
+@flask_app.route('/')
+def index():
+    return jsonify({"status": "Bot activo"})
+
+@flask_app.route('/ref/<user_id>')
+def referral_redirect(user_id):
+    visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if visitor_ip:
+        visitor_ip = visitor_ip.split(',')[0].strip()
+    add_referral(user_id, visitor_ip)
+    return redirect(TIKTOK_URL)
+
+@flask_app.route(f'/webhook/{TOKEN}', methods=['POST'])
+def webhook():
+    """Recibe updates de Telegram via webhook."""
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, application.bot)
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(application.process_update(update))
+        loop.close()
+    except Exception as e:
+        logger.error(f"Error procesando update: {e}")
+    return jsonify({"ok": True})
+
+@flask_app.route('/set_webhook')
+def set_webhook():
+    """Configura el webhook de Telegram."""
+    webhook_url = f"{BASE_URL}/webhook/{TOKEN}"
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
+    loop.close()
+    return jsonify({"ok": result, "webhook": webhook_url})
 
-    async def _start_bot():
-        init_db()
-        app = ApplicationBuilder().token(TOKEN).build()
-        app.add_handler(CommandHandler('start', start))
-        app.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(
-            poll_interval=1.0,
-            timeout=10,
-            allowed_updates=['message', 'callback_query'],
-            drop_pending_updates=True
-        )
-        logger.info("Bot de Telegram iniciado correctamente")
-        while True:
-            await asyncio.sleep(3600)
-
-    loop.run_until_complete(_start_bot())
+# ============ INICIO ============
 
 if __name__ == '__main__':
     logger.info(f"Iniciando en puerto {PORT}")
+    init_db()
     
-    # Bot en thread separado
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Inicializar la aplicación del bot
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(application.initialize())
     
-    # Flask en main thread con el PORT correcto de Railway
+    # Configurar webhook
+    webhook_url = f"{BASE_URL}/webhook/{TOKEN}"
+    loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
+    logger.info(f"Webhook configurado: {webhook_url}")
+    loop.close()
+    
+    # Flask en main thread
     flask_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
