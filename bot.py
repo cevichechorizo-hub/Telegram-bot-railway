@@ -200,13 +200,14 @@ async def main():
 if __name__ == '__main__':
     import threading
     
-    # Flask en thread separado
-    def run_flask():
-        port = int(os.environ.get('PORT', 5000))
-        flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    port = int(os.environ.get('PORT', 8080))
     
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Bot en thread separado
+    def run_bot():
+        asyncio.run(main())
     
-    # Bot en main thread con asyncio
-    asyncio.run(main())
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Flask en main thread (Railway necesita que el servidor HTTP corra en main)
+    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
