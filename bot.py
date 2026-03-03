@@ -217,7 +217,15 @@ def run_bot():
     asyncio.set_event_loop(loop)
     
     async def _run():
-        init_db()
+        # Limpiar cualquier webhook o sesion previa
+        import httpx
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=true")
+        except Exception:
+            pass
+        await asyncio.sleep(2)  # Esperar que Telegram libere la sesion
+        
         application = ApplicationBuilder().token(TOKEN).build()
         application.add_handler(CommandHandler('start', start))
         application.add_handler(CallbackQueryHandler(check_progress, pattern="check_progress"))
@@ -225,8 +233,8 @@ def run_bot():
         await application.initialize()
         await application.start()
         await application.updater.start_polling(
-            poll_interval=1.0,
-            timeout=10,
+            poll_interval=2.0,
+            timeout=20,
             allowed_updates=['message', 'callback_query'],
             drop_pending_updates=True
         )
