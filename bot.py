@@ -236,10 +236,16 @@ def run_bot():
     loop.run_until_complete(_run())
 
 if __name__ == '__main__':
-    # Iniciar bot de Telegram en thread separado
+    # Inicializar DB primero
+    init_db()
+    logger.info("DB inicializada")
+    
+    # Iniciar bot de Telegram en thread separado (daemon=True para que no bloquee)
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
+    logger.info("Bot thread iniciado")
     
-    # Iniciar Flask (para keep-alive y tracking de referidos)
+    # Flask arranca en main thread con el PORT de Railway
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    logger.info(f"Flask arrancando en puerto {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
